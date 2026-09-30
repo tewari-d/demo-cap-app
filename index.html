@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Daymark</title>
+  <meta name="description" content="Mark each day green or red and log cravings. Everything stays on your device.">
+  <meta name="theme-color" content="#f3f5f3" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0e1311" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Daymark">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="icon" type="image/png" href="icons/icon-180.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main id="screen"></main>
+
+  <nav class="tabbar">
+    <button class="tab" data-action="tab" data-tab="today">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.7 2.7L16.2 9.6"/></svg>
+      Today
+    </button>
+    <button class="tab" data-action="tab" data-tab="calendar">
+      <svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg>
+      Calendar
+    </button>
+    <button class="tab" data-action="tab" data-tab="progress">
+      <svg viewBox="0 0 24 24"><path d="M5.5 20v-8M12 20V5M18.5 20v-5"/></svg>
+      Progress
+    </button>
+  </nav>
+
+  <div id="sheet" class="sheet-backdrop" hidden>
+    <div id="sheet-body" class="sheet"></div>
+  </div>
+  <div id="celebrate" class="celebrate" hidden></div>
+  <div id="toast" class="toast" hidden></div>
+  <input id="import-file" type="file" accept="application/json,.json" hidden>
+</body>
+</html>
