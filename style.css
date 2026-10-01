@@ -75,9 +75,9 @@ button:disabled { cursor: default; }
 h1, h2, h3, p { margin: 0; }
 h2 { font-size: 20px; letter-spacing: -.01em; }
 h3 { font-size: 14px; font-weight: 600; color: var(--muted); margin: 20px 0 10px; }
-h3 em { font-style: normal; font-weight: 400; }
+h3 em, .field em { font-style: normal; font-weight: 400; color: var(--muted); }
 .muted { color: var(--muted); }
-.hint { color: var(--muted); font-size: 13px; margin: 4px 0 14px; }
+.hint { color: var(--muted); font-size: 13px; margin: 8px 0 14px; }
 .center { display: block; text-align: center; margin-left: auto; margin-right: auto; }
 .spacer { height: 14px; }
 
@@ -88,10 +88,10 @@ h3 em { font-style: normal; font-weight: 400; }
   margin-bottom: 14px;
   box-shadow: var(--shadow);
 }
-.card.soft { background: var(--amber-soft); box-shadow: none; }
 .card .muted { margin-top: 2px; }
 
-.page-title { font-size: 30px; letter-spacing: -.02em; margin: 8px 0 16px; }
+.page-title { font-size: 30px; letter-spacing: -.02em; margin: 8px 0 12px; }
+.page-sub { color: var(--muted); font-weight: 600; margin: 0 0 14px; }
 
 /* ---------- buttons ---------- */
 
@@ -114,51 +114,62 @@ h3 em { font-style: normal; font-weight: 400; }
   background: var(--bg);
   font-weight: 600;
 }
+.small-btn {
+  flex: none;
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: 10px;
+  background: var(--bg);
+  font-size: 14px;
+  font-weight: 600;
+}
 .link { color: var(--green-ink); font-weight: 600; min-height: 44px; padding: 10px 0; }
 .link.danger, .danger { color: var(--red-ink); }
-.primary:active, .secondary:active, .mark:active, .craving-btn:active, .chip:active, .cal-cell:active { transform: scale(.97); }
+.primary:active, .secondary:active, .mark:not(:disabled):active, .craving-row:active,
+.chip:active, .cal-cell:active, .add-habit:active { transform: scale(.97); }
 
 /* ---------- today ---------- */
 
-.hero { text-align: center; padding: 22px 0 26px; }
-.eyebrow {
+.today-head { padding: 14px 4px 16px; }
+.today-head h1 { font-size: 28px; letter-spacing: -.02em; }
+.status { margin-top: 4px; color: var(--muted); font-size: 15px; }
+.status.open { color: var(--green-ink); font-weight: 600; }
+
+.habit { padding: 18px; }
+.habit-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.habit-head h2 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.streak {
+  flex: none;
+  padding: 5px 11px;
+  border-radius: 999px;
+  background: var(--green-soft);
+  color: var(--green-ink);
   font-size: 13px;
   font-weight: 700;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-  color: var(--green-ink);
-  margin-bottom: 4px;
-}
-.hero-number {
-  font-size: 96px;
-  font-weight: 800;
-  line-height: 1;
-  letter-spacing: -.05em;
   font-variant-numeric: tabular-nums;
 }
-.hero-label { font-size: 18px; font-weight: 600; margin-top: 6px; }
-.hero-sub { color: var(--muted); font-size: 15px; margin-top: 4px; }
+.streak.zero { background: var(--bg); color: var(--muted); }
 
-.mark-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; }
+.mark-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
 .mark {
-  min-height: 104px;
-  border-radius: 18px;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 10px;
-  font-size: 17px;
+  min-height: 60px;
+  border-radius: 16px;
+  font-size: 16px;
   font-weight: 700;
   transition: transform .1s;
 }
-.mark .dot { width: 30px; height: 30px; }
+.mark .dot { width: 22px; height: 22px; }
 .mark.green { background: var(--green-soft); color: var(--green-ink); }
 .mark.red { background: var(--red-soft); color: var(--red-ink); }
 .mark.selected { box-shadow: inset 0 0 0 3px currentColor; }
-.mark-buttons.small { margin-top: 12px; }
-.mark-buttons.small .mark { min-height: 64px; flex-direction: row; font-size: 16px; }
-.mark-buttons.small .dot { width: 20px; height: 20px; }
+.mark:disabled { opacity: .38; }
+.mark-buttons.mini { margin-top: 8px; gap: 8px; }
+.mark-buttons.mini .mark { min-height: 44px; font-size: 15px; border-radius: 12px; }
+.mark-buttons.mini .dot { width: 16px; height: 16px; }
 
 .dot { display: inline-block; border-radius: 50%; flex: none; }
 .green .dot { background: var(--green); }
@@ -167,27 +178,30 @@ h3 em { font-style: normal; font-weight: 400; }
 .marked {
   display: flex;
   align-items: center;
-  gap: 14px;
-  margin-top: 16px;
-  padding: 16px;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 12px 14px;
   border-radius: 16px;
 }
 .marked.green { background: var(--green-soft); }
 .marked.red { background: var(--red-soft); }
-.marked .dot { width: 36px; height: 36px; }
-.marked strong { font-size: 17px; }
-.marked p { color: var(--muted); font-size: 15px; margin-top: 2px; }
+.marked .dot { width: 28px; height: 28px; }
+.marked-text { flex: 1; min-width: 0; }
+.marked-text p { color: var(--muted); font-size: 14px; margin-top: 1px; }
+.marked .link { flex: none; }
 
-.craving-btn {
+.yesterday { margin-top: 12px; padding: 12px; border-radius: 14px; background: var(--amber-soft); }
+.yesterday p { font-size: 14px; font-weight: 600; }
+
+.craving-row {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   width: 100%;
-  padding: 18px 20px;
-  margin-bottom: 14px;
-  border-radius: 20px;
-  background: var(--card);
-  box-shadow: var(--shadow);
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: var(--bg);
   text-align: left;
   transition: transform .1s;
 }
@@ -195,17 +209,41 @@ h3 em { font-style: normal; font-weight: 400; }
   display: grid;
   place-items: center;
   flex: none;
-  width: 52px;
-  height: 52px;
-  border-radius: 16px;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
   background: var(--amber-soft);
-  font-size: 26px;
+  font-size: 20px;
 }
-.craving-btn strong { display: block; font-size: 17px; }
-.craving-btn small { display: block; color: var(--muted); font-size: 14px; margin-top: 2px; }
+.craving-text { flex: 1; }
+.craving-text strong { display: block; font-size: 16px; }
+.craving-text small { display: block; color: var(--muted); font-size: 13px; }
+.plus {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--amber);
+  color: #241500;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+}
 
-.motivator { text-align: center; color: var(--muted); font-size: 15px; margin: 20px 0; }
+.motivator { margin-top: 12px; color: var(--muted); font-size: 14px; }
 .motivator strong { color: var(--text); }
+
+.add-habit {
+  display: block;
+  width: 100%;
+  min-height: 52px;
+  border-radius: 16px;
+  border: 1.5px dashed var(--grey);
+  color: var(--muted);
+  font-weight: 600;
+}
 
 .banner {
   display: flex;
@@ -227,7 +265,7 @@ h3 em { font-style: normal; font-weight: 400; }
   font-weight: 700;
 }
 
-/* ---------- setup and settings ---------- */
+/* ---------- setup and habit form ---------- */
 
 .setup { padding-top: 28px; }
 .setup h1 { font-size: 30px; letter-spacing: -.02em; }
@@ -259,6 +297,36 @@ h3 em { font-style: normal; font-weight: 400; }
 .field input:focus { outline: 2px solid var(--primary); outline-offset: -1px; }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .row2 .field span { min-height: 2.8em; }
+
+/* ---------- habit switcher and list ---------- */
+
+.habit-tabs {
+  display: flex;
+  gap: 8px;
+  margin: 0 -16px 14px;
+  padding: 2px 16px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.habit-tabs::-webkit-scrollbar { display: none; }
+.habit-tab {
+  flex: none;
+  min-height: 40px;
+  padding: 0 16px;
+  border-radius: 999px;
+  background: var(--card);
+  box-shadow: var(--shadow);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.habit-tab.active { background: var(--primary); color: var(--on-primary); }
+
+.habit-list { list-style: none; margin: 10px 0 0; padding: 0; }
+.habit-list li { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.habit-list li > div { flex: 1; min-width: 0; }
+.habit-list strong { display: block; }
+.habit-list .muted { display: block; font-size: 13px; }
 
 /* ---------- calendar ---------- */
 

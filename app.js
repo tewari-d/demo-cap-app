@@ -1,8 +1,8 @@
-// Daymark – mark each day green or red, and log cravings when they hit.
+// Daymark – mark each day green or red for every habit you track, and log cravings when they hit.
 // All data lives in this device's local storage; nothing is ever sent anywhere.
 
-const STORE_KEY = 'daymark.v1';
-const DAY_STARTS_AT_HOUR = 4;          // before 4 am still counts as the previous day
+const STORE_KEY = 'daymark.v1';        // name kept from the first version so existing data is found
+const CHECK_IN_FROM_HOUR = 19;         // today can only be marked from 7 pm until midnight
 const RIDE_OUT_SECONDS = 180;          // most cravings pass within a few minutes
 const LEVELS = ['Mild', 'Strong', 'Intense'];
 const TRIGGERS = ['Coffee', 'Stress', 'After meal', 'Alcohol', 'Boredom', 'Social', 'Other'];
@@ -17,29 +17,57 @@ const BADGES = [
 ];
 const CELEBRATE_AT = [7, 30, 100, 365];
 const SLIP_MESSAGES = [
-  'One red day doesn’t undo your progress. Tomorrow is a fresh green day.',
-  'Be kind to yourself. Every green day you had still counts.',
-  'Slips are part of the road. Notice what set it off, and go again tomorrow.',
+  'One red day doesn’t undo your progress. Tomorrow is a fresh start.',
+  'Be kind to yourself. Every green day still counts.',
+  'Notice what set it off, and go again tomorrow.',
 ];
 
 let state = load();
 let tab = 'today';
-let calendarMonth = todayKey().slice(0, 7);   // 'YYYY-MM'
-let editingCraving = null;                     // index of the craving open in the sheet
+let viewHabitId = null;                        // habit shown on Calendar and Progress (null = the first)
+let calendarMonth = todayKey().slice(0, 7);    // 'YYYY-MM'
+let editing = null;                            // { habitId, index } of the craving open in the sheet
 let breatheTimer = null;
-let renderedFor = null;                        // the day the screen was last drawn for
+let renderedFor = null;                        // day and check-in state the screen was last drawn for
 
 
 // ---------- storage ----------
 
 function freshState() {
-  return { settings: {}, days: {}, cravings: [], startDay: todayKey(), setupDone: false, lastExport: null };
+  return { version: 2, habits: [], setupDone: false, lastExport: null };
+}
+
+function newHabit(fields) {
+  return {
+    id: Math.random().toString(36).slice(2, 10),
+    name: 'My habit', unit: '', unitsPerDay: 0, dailyCost: 0, currency: '',
+    days: {}, cravings: [], startDay: todayKey(),
+    ...fields,
+  };
+}
+
+// Data from the first, single-habit version (and its backups) becomes the first habit.
+function upgrade(data) {
+  if (Array.isArray(data.habits)) return { ...freshState(), ...data };
+  if (!data.setupDone) return freshState();     // never got past the welcome screen
+  const s = data.settings || {};
+  const habit = newHabit({
+    name: s.habit || 'My habit',
+    unit: s.unit || '',
+    unitsPerDay: s.unitsPerDay || 0,
+    dailyCost: s.dailyCost || 0,
+    currency: s.currency || '',
+    days: data.days || {},
+    cravings: data.cravings || [],
+    startDay: data.startDay || todayKey(),
+  });
+  return { ...freshState(), setupDone: true, lastExport: data.lastExport || null, habits: [habit] };
 }
 
 function load() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORE_KEY));
-    if (saved) return { ...freshState(), ...saved };
+    if (saved) return upgrade(saved);
   } catch (e) { /* unreadable storage: start fresh */ }
   return freshState();
 }
@@ -50,6 +78,14 @@ function save() {
   } catch (e) {
     toast('Could not save on this device');
   }
+}
+
+function habitById(id) {
+  return state.habits.find(h => h.id === id);
+}
+
+function viewHabit() {
+  return habitById(viewHabitId) || state.habits[0];
 }
 
 
@@ -76,8 +112,16 @@ function daysBetween(fromKey, toKey) {
 }
 
 function todayKey() {
-  const now = new Date();
-  return now.getHours() < DAY_STARTS_AT_HOUR ? addDays(keyOf(now), -1) : keyOf(now);
+  return keyOf(new Date());
+}
+
+function checkInOpen() {
+  return new Date().getHours() >= CHECK_IN_FROM_HOUR;
+}
+
+// Past days can always be marked (for days you forgot); today only during the evening check-in.
+function canMark(key) {
+  return key < todayKey() || (key === todayKey() && checkInOpen());
 }
 
 function nowStamp() {   // e.g. '2026-09-30T16:42', local time
@@ -87,8 +131,7 @@ function nowStamp() {   // e.g. '2026-09-30T16:42', local time
 }
 
 function cravingDay(craving) {
-  const [key, time] = craving.t.split('T');
-  return Number(time.slice(0, 2)) < DAY_STARTS_AT_HOUR ? addDays(key, -1) : key;
+  return craving.t.slice(0, 10);
 }
 
 function shiftMonth(month, n) {
@@ -108,12 +151,12 @@ function formatTime(stamp) {
   return new Date(2000, 0, 1, h, m).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
 
-function formatHour(hour) {   // 16 -> '4 pm'
-  return `${hour % 12 || 12} ${hour < 12 || hour === 24 ? 'am' : 'pm'}`;
+function formatHour(hour) {   // 19 -> '7 PM' (or '19' on a 24-hour phone)
+  return new Date(2000, 0, 1, hour).toLocaleTimeString(undefined, { hour: 'numeric' });
 }
 
-function money(amount) {
-  return `${state.settings.currency || ''}${Math.round(amount).toLocaleString()}`;
+function money(habit, amount) {
+  return `${habit.currency || ''}${Math.round(amount).toLocaleString()}`;
 }
 
 function plural(n, word) {
@@ -130,26 +173,26 @@ function escapeHtml(text) {
 }
 
 
-// ---------- numbers ----------
+// ---------- numbers (per habit) ----------
 
-function greenDays() {
-  return Object.values(state.days).filter(mark => mark === 'green').length;
+function greenDays(habit) {
+  return Object.values(habit.days).filter(mark => mark === 'green').length;
 }
 
-function currentStreak() {
+function currentStreak(habit) {
   let day = todayKey();
-  if (state.days[day] === 'red') return 0;
-  if (!state.days[day]) day = addDays(day, -1);   // today not marked yet: the streak runs to yesterday
+  if (habit.days[day] === 'red') return 0;
+  if (!habit.days[day]) day = addDays(day, -1);   // today not marked yet: the streak runs to yesterday
   let streak = 0;
-  while (state.days[day] === 'green') {
+  while (habit.days[day] === 'green') {
     streak++;
     day = addDays(day, -1);
   }
   return streak;
 }
 
-function bestStreak() {
-  const greens = Object.keys(state.days).filter(key => state.days[key] === 'green').sort();
+function bestStreak(habit) {
+  const greens = Object.keys(habit.days).filter(key => habit.days[key] === 'green').sort();
   let best = 0, run = 0, previous = null;
   for (const key of greens) {
     run = previous && addDays(previous, 1) === key ? run + 1 : 1;
@@ -159,46 +202,72 @@ function bestStreak() {
   return best;
 }
 
-function cravingsByDay() {
+function cravingsByDay(habit) {
   const counts = {};
-  for (const craving of state.cravings) {
+  for (const craving of habit.cravings) {
     const day = cravingDay(craving);
     counts[day] = (counts[day] || 0) + 1;
   }
   return counts;
 }
 
-function countCravings(fromKey, toKey) {
-  return state.cravings.filter(c => cravingDay(c) >= fromKey && cravingDay(c) <= toKey).length;
+function countCravings(habit, fromKey, toKey) {
+  return habit.cravings.filter(c => cravingDay(c) >= fromKey && cravingDay(c) <= toKey).length;
 }
 
 
 // ---------- actions ----------
 
-function markDay(key, mark) {
-  const before = currentStreak();
-  if (mark) state.days[key] = mark;
-  else delete state.days[key];
-  if (mark && key < state.startDay) state.startDay = key;
+function markDay(habit, key, mark) {
+  if (!canMark(key)) return;
+  const before = currentStreak(habit);
+  if (mark) habit.days[key] = mark;
+  else delete habit.days[key];
+  if (mark && key < habit.startDay) habit.startDay = key;
   save();
-  const after = currentStreak();
-  if (mark === 'green' && after > before && CELEBRATE_AT.includes(after)) celebrate(after);
+  const after = currentStreak(habit);
+  if (mark === 'green' && after > before && CELEBRATE_AT.includes(after)) celebrate(habit, after);
 }
 
-function logCraving() {
-  state.cravings.push({ t: nowStamp(), level: null, trigger: null });
+function logCraving(habit) {
+  habit.cravings.push({ t: nowStamp(), level: null, trigger: null });
   save();
   render();
-  openCravingSheet(state.cravings.length - 1);
+  openCravingSheet(habit, habit.cravings.length - 1);
+}
+
+function editingCraving() {
+  return habitById(editing.habitId).cravings[editing.index];
 }
 
 function setCravingDetail(field, value, chip) {
-  const craving = state.cravings[editingCraving];
+  const craving = editingCraving();
   craving[field] = craving[field] === value ? null : value;   // tapping again clears it
   save();
   chip.parentElement.querySelectorAll('.chip').forEach(el => {
     el.classList.toggle('selected', el.dataset.value === craving[field]);
   });
+}
+
+function readHabitFields(form) {
+  const f = new FormData(form);
+  return {
+    name: f.get('name').trim() || 'My habit',
+    unit: f.get('unit').trim(),
+    unitsPerDay: Number(f.get('unitsPerDay')) || 0,
+    dailyCost: Number(f.get('dailyCost')) || 0,
+    currency: f.get('currency').trim(),
+  };
+}
+
+function deleteHabit(habit) {
+  if (!confirm(`Delete “${habit.name}” with all its days and cravings? This cannot be undone.`)) return;
+  state.habits = state.habits.filter(h => h !== habit);
+  if (viewHabitId === habit.id) viewHabitId = null;
+  save();
+  closeSheet();
+  render();
+  toast('Habit deleted');
 }
 
 async function exportBackup() {
@@ -226,26 +295,28 @@ async function exportBackup() {
 }
 
 async function importBackup(file) {
-  let data;
+  let incoming;
   try {
-    data = JSON.parse(await file.text());
-    if (!data.days || typeof data.days !== 'object' || !Array.isArray(data.cravings)) throw new Error();
+    const data = JSON.parse(await file.text());
+    if (!Array.isArray(data.habits) && !(data.days && Array.isArray(data.cravings))) throw new Error();
+    incoming = upgrade({ ...data, setupDone: true });
   } catch (e) {
     toast('That file is not a Daymark backup');
     return;
   }
-  const summary = `${plural(Object.keys(data.days).length, 'marked day')} and ${plural(data.cravings.length, 'craving')}`;
-  if (!confirm(`Replace everything on this phone with the backup (${summary})?`)) return;
-  state = { ...freshState(), ...data, setupDone: true };
+  if (!confirm(`Replace everything on this phone with the backup (${plural(incoming.habits.length, 'habit')})?`)) return;
+  state = incoming;
+  viewHabitId = null;
   save();
   render();
   toast('Backup restored');
 }
 
 function resetAll() {
-  if (!confirm('Delete all marked days, cravings and settings from this phone? This cannot be undone.')) return;
+  if (!confirm('Delete all habits, marked days and cravings from this phone? This cannot be undone.')) return;
   state = freshState();
   tab = 'today';
+  viewHabitId = null;
   save();
   render();
 }
@@ -253,8 +324,12 @@ function resetAll() {
 
 // ---------- screens ----------
 
+function screenKey() {
+  return `${todayKey()} ${checkInOpen()}`;
+}
+
 function render() {
-  renderedFor = todayKey();
+  renderedFor = screenKey();
   const setup = !state.setupDone;
   document.querySelector('.tabbar').hidden = setup;
   document.querySelectorAll('.tab').forEach(el => el.classList.toggle('active', el.dataset.tab === tab));
@@ -262,33 +337,21 @@ function render() {
   document.getElementById('screen').innerHTML = setup ? renderSetup() : screens[tab]();
 }
 
-function settingsFields() {
-  const s = state.settings;
+function habitFields(h = {}) {
   const value = v => (v ? `value="${escapeHtml(v)}"` : '');
   return `
-    <label class="field"><span>What are you tracking?</span>
-      <input name="habit" placeholder="e.g. Sugar-free" autocomplete="off" ${value(s.habit)}></label>
-    <label class="field"><span>What do you count?</span>
-      <input name="unit" placeholder="e.g. snacks" autocomplete="off" ${value(s.unit)}></label>
+    <label class="field"><span>Habit name</span>
+      <input name="name" required placeholder="e.g. Sugar-free" autocomplete="off" ${value(h.name)}></label>
+    <label class="field"><span>What do you count? <em>optional</em></span>
+      <input name="unit" placeholder="e.g. snacks" autocomplete="off" ${value(h.unit)}></label>
     <div class="row2">
       <label class="field"><span>How many a day, before?</span>
-        <input name="unitsPerDay" type="number" inputmode="decimal" step="any" min="0" placeholder="0" ${value(s.unitsPerDay)}></label>
+        <input name="unitsPerDay" type="number" inputmode="decimal" step="any" min="0" placeholder="0" ${value(h.unitsPerDay)}></label>
       <label class="field"><span>What it cost a day</span>
-        <input name="dailyCost" type="number" inputmode="decimal" step="any" min="0" placeholder="0" ${value(s.dailyCost)}></label>
+        <input name="dailyCost" type="number" inputmode="decimal" step="any" min="0" placeholder="0" ${value(h.dailyCost)}></label>
     </div>
     <label class="field"><span>Currency symbol</span>
-      <input name="currency" maxlength="3" placeholder="e.g. $, €, ₹" autocomplete="off" ${value(s.currency)}></label>`;
-}
-
-function readSettings(form) {
-  const f = new FormData(form);
-  return {
-    habit: f.get('habit').trim(),
-    unit: f.get('unit').trim(),
-    unitsPerDay: Number(f.get('unitsPerDay')) || 0,
-    dailyCost: Number(f.get('dailyCost')) || 0,
-    currency: f.get('currency').trim(),
-  };
+      <input name="currency" maxlength="3" placeholder="e.g. $, €, ₹" autocomplete="off" ${value(h.currency)}></label>`;
 }
 
 function renderSetup() {
@@ -296,92 +359,102 @@ function renderSetup() {
     <div class="setup">
       <div class="logo"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M8.3 12.4l2.6 2.6 4.9-5.4"/></svg></div>
       <h1>Welcome to Daymark</h1>
-      <p class="lead">Each evening, mark your day green or red. When a craving hits, log it with one tap.
-        Everything stays on this phone.</p>
+      <p class="lead">Track one habit or several. Each evening from ${formatHour(CHECK_IN_FROM_HOUR)}, mark the day
+        green or red. When a craving hits, log it with one tap. Everything stays on this phone.</p>
       <form id="setup-form" class="card">
-        ${settingsFields()}
-        <p class="hint">All optional. You can change these later under Progress.</p>
+        <h2>Your first habit</h2>
+        <div class="spacer"></div>
+        ${habitFields()}
+        <p class="hint">Only the name is needed. You can add more habits later.</p>
         <button class="primary" type="submit">Start</button>
       </form>
-      <button class="link center" data-action="skip-setup">Skip for now</button>
     </div>`;
 }
 
 function renderToday() {
   const today = todayKey();
-  const mark = state.days[today];
-  const streak = currentStreak();
-  const best = bestStreak();
-  const yesterday = addDays(today, -1);
-  const todaysCravings = cravingsByDay()[today] || 0;
+  const open = checkInOpen();
+  const allMarked = state.habits.length > 0 && state.habits.every(h => h.days[today]);
+  let status = `🔒 You can mark today from ${formatHour(CHECK_IN_FROM_HOUR)}. Cravings can be logged any time.`;
+  if (open) status = 'Check-in is open until midnight.';
+  if (allMarked) status = '✓ All marked for today. See you tomorrow evening.';
 
-  let sub = best > streak ? `Best: ${plural(best, 'day')}` : '';
-  if (!best) sub = 'Your first green day starts today';
+  const cards = state.habits.length
+    ? state.habits.map(h => habitCard(h, today, open)).join('')
+    : '<section class="card"><h2>No habits yet</h2><p class="muted">Add one to start tracking.</p></section>';
 
   return `
     ${backupBanner()}
-    <header class="hero">
-      ${state.settings.habit ? `<div class="eyebrow">${escapeHtml(state.settings.habit)}</div>` : ''}
-      <div class="hero-number">${streak}</div>
-      <div class="hero-label">${streak === 1 ? 'day' : 'days'} in a row</div>
-      ${sub ? `<div class="hero-sub">${sub}</div>` : ''}
+    <header class="today-head">
+      <h1>${formatDay(today, { weekday: 'long', day: 'numeric', month: 'long' })}</h1>
+      <p class="status ${open && !allMarked ? 'open' : ''}">${status}</p>
     </header>
-
-    <section class="card">
-      <h2>How was today?</h2>
-      <p class="muted">${formatDay(today, { weekday: 'long', day: 'numeric', month: 'long' })}</p>
-      ${mark ? markedToday(mark, today, streak) : markButtons('mark')}
-    </section>
-
-    ${!state.days[yesterday] && yesterday >= state.startDay ? `
-      <section class="card soft">
-        <p><strong>Yesterday isn’t marked.</strong> How did it go?</p>
-        ${markButtons('mark-yesterday', true)}
-      </section>` : ''}
-
-    <button class="craving-btn" data-action="craving">
-      <span class="craving-icon">🌊</span>
-      <span><strong>I’m having a craving</strong>
-        <small>${todaysCravings ? `${plural(todaysCravings, 'craving')} today · tap to log another` : 'Tap to log it, then ride it out'}</small></span>
-    </button>
-
-    ${motivator()}`;
+    ${cards}
+    <button class="add-habit" data-action="add-habit">+ Add a habit</button>`;
 }
 
-function markButtons(action, small = false) {
+function habitCard(habit, today, open) {
+  const mark = habit.days[today];
+  const streak = currentStreak(habit);
+  const yesterday = addDays(today, -1);
+  const cravingsToday = cravingsByDay(habit)[today] || 0;
   return `
-    <div class="mark-buttons ${small ? 'small' : ''}">
-      <button class="mark green" data-action="${action}" data-value="green"><span class="dot"></span>Clean day</button>
-      <button class="mark red" data-action="${action}" data-value="red"><span class="dot"></span>Slipped</button>
+    <section class="card habit">
+      <header class="habit-head">
+        <h2>${escapeHtml(habit.name)}</h2>
+        <span class="streak ${streak ? '' : 'zero'}">${streak ? `${streak}-day streak` : 'No streak yet'}</span>
+      </header>
+      ${mark ? markedRow(habit, mark, open) : markButtons('mark', habit.id, !open)}
+      ${!habit.days[yesterday] && yesterday >= habit.startDay ? `
+        <div class="yesterday">
+          <p>Yesterday isn’t marked yet:</p>
+          ${markButtons('mark-yesterday', habit.id, false, true)}
+        </div>` : ''}
+      <button class="craving-row" data-action="craving" data-habit="${habit.id}">
+        <span class="craving-icon">🌊</span>
+        <span class="craving-text"><strong>Craving</strong>
+          <small>${cravingsToday ? `${plural(cravingsToday, 'craving')} today` : 'Tap when one hits'}</small></span>
+        <span class="plus">+</span>
+      </button>
+      ${motivator(habit)}
+    </section>`;
+}
+
+function markButtons(action, habitId, locked, mini = false) {
+  const attrs = value => `data-action="${action}" data-habit="${habitId}" data-value="${value}" ${locked ? 'disabled' : ''}`;
+  return `
+    <div class="mark-buttons ${mini ? 'mini' : ''}">
+      <button class="mark green" ${attrs('green')}><span class="dot"></span>Clean day</button>
+      <button class="mark red" ${attrs('red')}><span class="dot"></span>Slipped</button>
     </div>`;
 }
 
-function markedToday(mark, today, streak) {
+function markedRow(habit, mark, open) {
   const text = mark === 'green'
-    ? (streak > 1 ? `Nice work. That’s ${plural(streak, 'day')} in a row.` : 'Nice work. One day at a time.')
-    : SLIP_MESSAGES[dateOf(today).getDate() % SLIP_MESSAGES.length];
+    ? 'Nice work. One day at a time.'
+    : SLIP_MESSAGES[dateOf(todayKey()).getDate() % SLIP_MESSAGES.length];
   return `
     <div class="marked ${mark}">
       <span class="dot"></span>
-      <div><strong>${mark === 'green' ? 'Clean day' : 'Slipped'}</strong><p>${text}</p></div>
-    </div>
-    <button class="link" data-action="unmark">Change</button>`;
+      <div class="marked-text"><strong>${mark === 'green' ? 'Clean day' : 'Slipped'}</strong><p>${text}</p></div>
+      ${open ? `<button class="link" data-action="unmark" data-habit="${habit.id}">Change</button>` : ''}
+    </div>`;
 }
 
-function motivator() {
-  const s = state.settings;
-  const greens = greenDays();
-  if (!greens) return '';
+function motivator(habit) {
+  const greens = greenDays(habit);
   const parts = [];
-  if (s.dailyCost > 0) parts.push(`<strong>${money(greens * s.dailyCost)}</strong> saved`);
-  if (s.unitsPerDay > 0) parts.push(`<strong>${Math.round(greens * s.unitsPerDay).toLocaleString()}</strong> ${escapeHtml(s.unit || 'units')} avoided`);
-  if (!parts.length) parts.push(`<strong>${plural(greens, 'green day')}</strong> so far`);
-  return `<p class="motivator">${parts.join(' · ')}</p>`;
+  if (greens && habit.dailyCost > 0) parts.push(`<strong>${money(habit, greens * habit.dailyCost)}</strong> saved`);
+  if (greens && habit.unitsPerDay > 0) {
+    parts.push(`<strong>${Math.round(greens * habit.unitsPerDay).toLocaleString()}</strong> ${escapeHtml(habit.unit || 'units')} avoided`);
+  }
+  return parts.length ? `<p class="motivator">${parts.join(' · ')}</p>` : '';
 }
 
 function backupBanner() {
+  const marked = state.habits.reduce((sum, h) => sum + Object.keys(h.days).length, 0);
   const due = !state.lastExport || daysBetween(state.lastExport, todayKey()) >= 30;
-  if (!due || Object.keys(state.days).length < 7) return '';
+  if (!due || marked < 7) return '';
   return `
     <div class="banner">
       <span>Your data lives only on this phone. Save a backup to Files.</span>
@@ -389,12 +462,22 @@ function backupBanner() {
     </div>`;
 }
 
+// Switcher for Calendar and Progress; with a single habit it is just its name.
+function habitTabs(current) {
+  if (state.habits.length < 2) return `<p class="page-sub">${escapeHtml(current.name)}</p>`;
+  return `<div class="habit-tabs">${state.habits.map(h =>
+    `<button class="habit-tab ${h.id === current.id ? 'active' : ''}" data-action="view-habit" data-habit="${h.id}">${escapeHtml(h.name)}</button>`).join('')}</div>`;
+}
+
 function renderCalendar() {
+  const habit = viewHabit();
+  if (!habit) return '<h1 class="page-title">Calendar</h1><p class="muted">Add a habit on Today first.</p>';
+
   const [y, m] = calendarMonth.split('-').map(Number);
   const daysInMonth = new Date(y, m, 0).getDate();
   const offset = (new Date(y, m - 1, 1).getDay() + 6) % 7;   // weeks start on Monday
   const today = todayKey();
-  const cravings = cravingsByDay();
+  const cravings = cravingsByDay(habit);
   const totals = { green: 0, red: 0, cravings: 0 };
 
   const weekdays = [...Array(7)].map((_, i) =>
@@ -403,10 +486,10 @@ function renderCalendar() {
   let cells = '<div></div>'.repeat(offset);
   for (let d = 1; d <= daysInMonth; d++) {
     const key = `${calendarMonth}-${String(d).padStart(2, '0')}`;
-    const mark = state.days[key];
+    const mark = habit.days[key];
     const count = cravings[key] || 0;
     const future = key > today;
-    const missed = !mark && !future && key >= state.startDay && key < today;
+    const missed = !mark && !future && key >= habit.startDay && key < today;
     if (mark) totals[mark]++;
     totals.cravings += count;
     const classes = [mark, missed && 'missed', future && 'future', key === today && 'today'].filter(Boolean).join(' ');
@@ -417,6 +500,7 @@ function renderCalendar() {
   const monthName = new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
   const atCurrentMonth = calendarMonth >= today.slice(0, 7);
   return `
+    ${habitTabs(habit)}
     <header class="cal-head">
       <button class="icon-btn" data-action="month" data-value="-1" aria-label="Previous month">‹</button>
       <h1>${monthName}</h1>
@@ -432,46 +516,25 @@ function renderCalendar() {
       <div><strong>${totals.red}</strong><span>red</span></div>
       <div><strong>${totals.cravings}</strong><span>cravings</span></div>
     </section>
-    <p class="hint center">Tap a day to mark it or see its cravings.</p>`;
+    <p class="hint center">Tap a day to mark a day you forgot, or to see its cravings.</p>`;
 }
 
 function renderProgress() {
-  const s = state.settings;
-  const greens = greenDays();
-  const current = currentStreak();
-  const best = bestStreak();
-
-  const tiles = [
-    [plural(current, 'day'), 'Current streak'],
-    [plural(best, 'day'), 'Best streak'],
-    [greens.toLocaleString(), 'Green days'],
-  ];
-  if (s.dailyCost > 0) tiles.push([money(greens * s.dailyCost), 'Money saved']);
-  if (s.unitsPerDay > 0) tiles.push([Math.round(greens * s.unitsPerDay).toLocaleString(), `${capitalize(escapeHtml(s.unit || 'units'))} avoided`]);
-
-  const next = BADGES.find(b => b.days > current);
-  const badges = BADGES.map(b =>
-    `<div class="badge ${best >= b.days ? 'reached' : ''}"><span class="medal"></span>${b.label}</div>`).join('');
-
+  const habit = viewHabit();
   return `
     <h1 class="page-title">Progress</h1>
-    <div class="tiles">${tiles.map(([value, label]) =>
-      `<div class="tile"><div class="tile-value">${value}</div><div class="tile-label">${label}</div></div>`).join('')}</div>
-
-    ${renderCravingInsights()}
+    ${habit ? habitTabs(habit) + habitProgress(habit) : ''}
 
     <section class="card">
-      <h2>Streak badges</h2>
-      <p class="muted">${next ? `Next: ${next.label}, ${plural(next.days - current, 'day')} to go` : 'You’ve earned every badge. Amazing.'}</p>
-      <div class="badges">${badges}</div>
+      <h2>Habits</h2>
+      <ul class="habit-list">${state.habits.map(h => `
+        <li>
+          <div><strong>${escapeHtml(h.name)}</strong>
+            <span class="muted">${plural(greenDays(h), 'green day')} · since ${formatDay(h.startDay)}</span></div>
+          <button class="small-btn" data-action="edit-habit" data-habit="${h.id}">Edit</button>
+        </li>`).join('')}</ul>
+      <button class="secondary" data-action="add-habit">+ Add a habit</button>
     </section>
-
-    <form id="settings-form" class="card">
-      <h2>Settings</h2>
-      <div class="spacer"></div>
-      ${settingsFields()}
-      <button class="primary" type="submit">Save settings</button>
-    </form>
 
     <section class="card">
       <h2>Backup</h2>
@@ -483,17 +546,49 @@ function renderProgress() {
     <button class="link danger center" data-action="reset">Reset all data</button>`;
 }
 
-function renderCravingInsights() {
-  if (!state.cravings.length) {
+function habitProgress(habit) {
+  const greens = greenDays(habit);
+  const current = currentStreak(habit);
+  const best = bestStreak(habit);
+
+  const tiles = [
+    [plural(current, 'day'), 'Current streak'],
+    [plural(best, 'day'), 'Best streak'],
+    [greens.toLocaleString(), 'Green days'],
+  ];
+  if (habit.dailyCost > 0) tiles.push([money(habit, greens * habit.dailyCost), 'Money saved']);
+  if (habit.unitsPerDay > 0) {
+    tiles.push([Math.round(greens * habit.unitsPerDay).toLocaleString(), `${capitalize(escapeHtml(habit.unit || 'units'))} avoided`]);
+  }
+
+  const next = BADGES.find(b => b.days > current);
+  const badges = BADGES.map(b =>
+    `<div class="badge ${best >= b.days ? 'reached' : ''}"><span class="medal"></span>${b.label}</div>`).join('');
+
+  return `
+    <div class="tiles">${tiles.map(([value, label]) =>
+      `<div class="tile"><div class="tile-value">${value}</div><div class="tile-label">${label}</div></div>`).join('')}</div>
+
+    ${renderCravingInsights(habit)}
+
+    <section class="card">
+      <h2>Streak badges</h2>
+      <p class="muted">${next ? `Next: ${next.label}, ${plural(next.days - current, 'day')} to go` : 'You’ve earned every badge. Amazing.'}</p>
+      <div class="badges">${badges}</div>
+    </section>`;
+}
+
+function renderCravingInsights(habit) {
+  if (!habit.cravings.length) {
     return `
       <section class="card">
         <h2>Cravings</h2>
-        <p class="muted">None logged yet. When one hits, tap “I’m having a craving” on Today.</p>
+        <p class="muted">None logged yet. When one hits, tap “Craving” on this habit’s card on Today.</p>
       </section>`;
   }
 
   const today = todayKey();
-  const perDay = cravingsByDay();
+  const perDay = cravingsByDay(habit);
   const last14 = [...Array(14)].map((_, i) => addDays(today, i - 13));
   const max = Math.max(1, ...last14.map(key => perDay[key] || 0));
   const bars = last14.map(key => {
@@ -506,14 +601,14 @@ function renderCravingInsights() {
       </div>`;
   }).join('');
 
-  const thisWeek = countCravings(addDays(today, -6), today);
-  const lastWeek = countCravings(addDays(today, -13), addDays(today, -7));
+  const thisWeek = countCravings(habit, addDays(today, -6), today);
+  const lastWeek = countCravings(habit, addDays(today, -13), addDays(today, -7));
   let trend = '';
   if (lastWeek && thisWeek < lastWeek) trend = ` · down ${Math.round((1 - thisWeek / lastWeek) * 100)}%, well done`;
   if (lastWeek && thisWeek > lastWeek) trend = ' · a tougher week, keep riding them out';
 
   const triggerCounts = {};
-  for (const c of state.cravings) if (c.trigger) triggerCounts[c.trigger] = (triggerCounts[c.trigger] || 0) + 1;
+  for (const c of habit.cravings) if (c.trigger) triggerCounts[c.trigger] = (triggerCounts[c.trigger] || 0) + 1;
   const topTriggers = Object.entries(triggerCounts).sort((a, b) => b[1] - a[1]).slice(0, 4);
   const triggerRows = topTriggers.map(([name, n]) => `
     <div class="hbar"><span>${escapeHtml(name)}</span>
@@ -521,12 +616,12 @@ function renderCravingInsights() {
       <b>${n}</b></div>`).join('');
 
   const windows = {};   // two-hour windows: 0 = midnight–2 am, 8 = 4–6 pm, ...
-  for (const c of state.cravings) {
+  for (const c of habit.cravings) {
     const w = Math.floor(Number(c.t.slice(11, 13)) / 2);
     windows[w] = (windows[w] || 0) + 1;
   }
   const [peak] = Object.entries(windows).sort((a, b) => b[1] - a[1])[0];
-  const peakText = state.cravings.length >= 3
+  const peakText = habit.cravings.length >= 3
     ? `Most cravings hit between <strong>${formatHour(peak * 2)} and ${formatHour(peak * 2 + 2)}</strong>.` : '';
 
   return `
@@ -557,12 +652,12 @@ function chips(field, options, selected) {
     `<button class="chip ${o === selected ? 'selected' : ''}" data-action="${field}" data-value="${o}">${o}</button>`).join('')}</div>`;
 }
 
-function openCravingSheet(index) {
-  editingCraving = index;
-  const craving = state.cravings[index];
+function openCravingSheet(habit, index) {
+  editing = { habitId: habit.id, index };
+  const craving = habit.cravings[index];
   openSheet(`
     <h2>Craving logged</h2>
-    <p class="muted">At ${formatTime(craving.t)}. It usually passes within a few minutes.</p>
+    <p class="muted">${escapeHtml(habit.name)} · ${formatTime(craving.t)}. It usually passes within a few minutes.</p>
     <h3>How strong? <em>optional</em></h3>
     ${chips('level', LEVELS, craving.level)}
     <h3>What set it off? <em>optional</em></h3>
@@ -606,35 +701,50 @@ function stopBreathing() {
   breatheTimer = null;
 }
 
-function openDaySheet(key) {
-  const mark = state.days[key];
-  const list = state.cravings
+function openDaySheet(habit, key) {
+  const mark = habit.days[key];
+  const locked = !canMark(key);
+  const rows = habit.cravings
     .map((c, index) => ({ ...c, index }))
-    .filter(c => cravingDay(c) === key);
-  const rows = list.map(c => `
-    <li><span>${formatTime(c.t)}</span>
-      <span class="muted">${[c.level, c.trigger].filter(Boolean).join(' · ') || 'No details'}</span>
-      <button class="remove" data-action="delete-craving" data-index="${c.index}" data-day="${key}" aria-label="Remove">×</button></li>`).join('');
+    .filter(c => cravingDay(c) === key)
+    .map(c => `
+      <li><span>${formatTime(c.t)}</span>
+        <span class="muted">${[c.level, c.trigger].filter(Boolean).join(' · ') || 'No details'}</span>
+        <button class="remove" data-action="delete-craving" data-index="${c.index}" data-day="${key}" aria-label="Remove">×</button></li>`)
+    .join('');
+  const dayButton = (value, label) => `
+    <button class="mark ${value} ${mark === value ? 'selected' : ''}" data-action="set-day" data-day="${key}" data-value="${value}" ${locked ? 'disabled' : ''}>
+      <span class="dot"></span>${label}</button>`;
 
   openSheet(`
     <h2>${formatDay(key, { weekday: 'long', day: 'numeric', month: 'long' })}</h2>
-    <div class="mark-buttons">
-      <button class="mark green ${mark === 'green' ? 'selected' : ''}" data-action="set-day" data-day="${key}" data-value="green"><span class="dot"></span>Clean day</button>
-      <button class="mark red ${mark === 'red' ? 'selected' : ''}" data-action="set-day" data-day="${key}" data-value="red"><span class="dot"></span>Slipped</button>
-    </div>
-    ${mark ? `<button class="link" data-action="set-day" data-day="${key}" data-value="">Clear mark</button>` : ''}
+    <p class="muted">${escapeHtml(habit.name)}</p>
+    <div class="mark-buttons">${dayButton('green', 'Clean day')}${dayButton('red', 'Slipped')}</div>
+    ${locked ? `<p class="hint">You can mark today from ${formatHour(CHECK_IN_FROM_HOUR)}.</p>` : ''}
+    ${mark && !locked ? `<button class="link" data-action="set-day" data-day="${key}" data-value="">Clear mark</button>` : ''}
     <h3>Cravings</h3>
     ${rows ? `<ul class="craving-list">${rows}</ul>` : '<p class="muted">No cravings logged.</p>'}
     <button class="primary" data-action="close-sheet">Done</button>`);
 }
 
-function celebrate(days) {
+function openHabitSheet(habit) {
+  openSheet(`
+    <h2>${habit ? 'Edit habit' : 'New habit'}</h2>
+    <form id="habit-form" data-habit="${habit ? habit.id : ''}">
+      <div class="spacer"></div>
+      ${habitFields(habit || { currency: state.habits[0]?.currency })}
+      <button class="primary" type="submit">${habit ? 'Save' : 'Add habit'}</button>
+    </form>
+    ${habit ? `<button class="link danger center" data-action="delete-habit" data-habit="${habit.id}">Delete this habit</button>` : ''}`);
+}
+
+function celebrate(habit, days) {
   const el = document.getElementById('celebrate');
   const confetti = [...Array(18)].map((_, i) => `<i style="--angle:${i * 20}deg"></i>`).join('');
   el.innerHTML = `
     <div class="burst">${confetti}</div>
     <div class="celebrate-card"><div class="celebrate-emoji">🎉</div>
-      <strong>${plural(days, 'day')} in a row!</strong><span>Keep going.</span></div>`;
+      <strong>${plural(days, 'day')} in a row!</strong><span>${escapeHtml(habit.name)} · keep going.</span></div>`;
   el.hidden = false;
   setTimeout(() => (el.hidden = true), 2800);
 }
@@ -658,42 +768,61 @@ document.addEventListener('click', event => {
     return;
   }
   const { action, value, day } = el.dataset;
+  const habit = el.dataset.habit ? habitById(el.dataset.habit) : viewHabit();
   switch (action) {
     case 'tab': tab = el.dataset.tab; render(); window.scrollTo(0, 0); break;
-    case 'mark': markDay(todayKey(), value); render(); break;
-    case 'mark-yesterday': markDay(addDays(todayKey(), -1), value); render(); break;
-    case 'unmark': markDay(todayKey(), null); render(); break;
-    case 'craving': logCraving(); break;
+    case 'view-habit': viewHabitId = habit.id; render(); break;
+    case 'mark': markDay(habit, todayKey(), value); render(); break;
+    case 'mark-yesterday': markDay(habit, addDays(todayKey(), -1), value); render(); break;
+    case 'unmark': markDay(habit, todayKey(), null); render(); break;
+    case 'craving': logCraving(habit); break;
     case 'level': case 'trigger': setCravingDetail(action, value, el); break;
     case 'breathe': startBreathing(); break;
     case 'stop-breathe': stopBreathing(); document.getElementById('breathe').innerHTML = rideOutButton(); break;
     case 'undo-craving':
-      state.cravings.splice(editingCraving, 1);
+      habitById(editing.habitId).cravings.splice(editing.index, 1);
       save(); closeSheet(); render(); toast('Craving removed');
       break;
-    case 'open-day': openDaySheet(day); break;
-    case 'set-day': markDay(day, value || null); closeSheet(); render(); break;
+    case 'open-day': openDaySheet(habit, day); break;
+    case 'set-day': markDay(habit, day, value || null); closeSheet(); render(); break;
     case 'delete-craving':
-      state.cravings.splice(Number(el.dataset.index), 1);
-      save(); render(); openDaySheet(day);
+      habit.cravings.splice(Number(el.dataset.index), 1);
+      save(); render(); openDaySheet(habit, day);
       break;
     case 'month': calendarMonth = shiftMonth(calendarMonth, Number(value)); render(); break;
     case 'close-sheet': closeSheet(); break;
+    case 'add-habit': openHabitSheet(null); break;
+    case 'edit-habit': openHabitSheet(habit); break;
+    case 'delete-habit': deleteHabit(habit); break;
     case 'export': exportBackup(); break;
     case 'import': document.getElementById('import-file').click(); break;
     case 'reset': resetAll(); break;
-    case 'skip-setup': state.setupDone = true; save(); render(); break;
   }
 });
 
 document.addEventListener('submit', event => {
   event.preventDefault();
-  const firstTime = event.target.id === 'setup-form';
-  state.settings = readSettings(event.target);
-  state.setupDone = true;
+  const form = event.target;
+  const fields = readHabitFields(form);
+  if (form.id === 'setup-form') {
+    state.habits = [newHabit(fields)];
+    state.setupDone = true;
+    toast(`All set. Come back after ${formatHour(CHECK_IN_FROM_HOUR)} to mark your day.`);
+  } else {
+    const habit = habitById(form.dataset.habit);
+    if (habit) {
+      Object.assign(habit, fields);
+      toast('Habit saved');
+    } else {
+      const added = newHabit(fields);
+      state.habits.push(added);
+      viewHabitId = added.id;
+      toast('Habit added');
+    }
+    closeSheet();
+  }
   save();
   render();
-  toast(firstTime ? 'All set. Come back tonight to mark your day.' : 'Settings saved');
 });
 
 document.getElementById('import-file').addEventListener('change', event => {
@@ -702,10 +831,12 @@ document.getElementById('import-file').addEventListener('change', event => {
   if (file) importBackup(file);
 });
 
-// The app may stay open overnight: when it comes back on a new day, redraw "today".
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && renderedFor !== todayKey()) render();
-});
+// The app may stay open across 7 pm or midnight: redraw when the day or the check-in window changes.
+function refreshIfStale() {
+  if (!document.hidden && renderedFor !== screenKey()) render();
+}
+document.addEventListener('visibilitychange', refreshIfStale);
+setInterval(refreshIfStale, 30000);
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
 navigator.storage?.persist?.();   // ask iOS to keep this app's data
